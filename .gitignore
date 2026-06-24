@@ -1,0 +1,21 @@
+# Build and compilation output
+build/
+bin/
+out/
+obj/
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.lib
+
+# Python virtual environment
+py_monitor/.venv/
+py_monitor/__pycache__/
+*.pyc
+
+# IDE settings
+.vs/
+.idea/
+.vscode/
+imgui.ini
