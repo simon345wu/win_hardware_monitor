@@ -9,44 +9,64 @@
 #include "system_monitor.h"
 #include "ui_renderer.h"
 
-// Forward declare ImGui Win32 message handler
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
-// Global DirectX variables
-static ID3D11Device*            g_pd3dDevice = nullptr;
-static ID3D11DeviceContext*     g_pd3dDeviceContext = nullptr;
-static IDXGISwapChain*          g_pSwapChain = nullptr;
-static ID3D11RenderTargetView*  g_mainRenderTargetView = nullptr;
+static ID3D11Device*           g_pd3dDevice = nullptr;
+static ID3D11DeviceContext*    g_pd3dDeviceContext = nullptr;
+static IDXGISwapChain*         g_pSwapChain = nullptr;
+static ID3D11RenderTargetView* g_mainRenderTargetView = nullptr;
 
-// Helper functions declarations
 bool CreateDeviceD3D(HWND hWnd);
 void CleanupDeviceD3D();
 void CreateRenderTarget();
 void CleanupRenderTarget();
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
-// Immersive dark mode Windows 11/10 title bar constant
-#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
-#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+#ifndef DWMWCP_ROUND
+#define DWMWCP_ROUND 2
 #endif
 
+// Widget size in logical (96-DPI) pixels, scaled at runtime.
+static const int kBaseWidth = 300;
+static const int kBaseHeight = 296;
+
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow) {
-    // 1. Initialize and start the background monitoring thread
+    ImGui_ImplWin32_EnableDpiAwareness();
+
     SystemMonitor monitor;
     monitor.Start();
 
-    // 2. Register Win32 Window Class
-    WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, hInstance, nullptr, nullptr, nullptr, nullptr, L"WinHardwareMonitorClass", nullptr };
+    WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, hInstance,
+                       nullptr, ::LoadCursorW(nullptr, IDC_ARROW), nullptr, nullptr,
+                       L"WinResMonitorClass", nullptr };
     ::RegisterClassExW(&wc);
-    
-    // Create the Application Window
+
+    // Size/position: DPI-scaled, docked to the top-right of the work area.
+    float dpiScale = ImGui_ImplWin32_GetDpiScaleForMonitor(
+        ::MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY));
+    if (dpiScale <= 0.0f) dpiScale = 1.0f;
+    int width = (int)(kBaseWidth * dpiScale);
+    int height = (int)(kBaseHeight * dpiScale);
+
+    RECT workArea{0, 0, 1920, 1080};
+    ::SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+    int margin = (int)(12 * dpiScale);
+    int posX = workArea.right - width - margin;
+    int posY = workArea.top + margin;
+
+    // Borderless topmost tool window: no title bar, no taskbar button.
+    // Note: WS_EX_LAYERED must not be used here — DXGI swap chains do not
+    // composite onto layered windows, leaving the window invisible.
     HWND hwnd = ::CreateWindowExW(
-        0, 
-        wc.lpszClassName, 
-        L"Windows Hardware Performance Monitor", 
-        WS_OVERLAPPEDWINDOW, 
-        100, 100, 1280, 800, 
-        nullptr, nullptr, 
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        wc.lpszClassName,
+        L"Resource Monitor",
+        WS_POPUP,
+        posX, posY, width, height,
+        nullptr, nullptr,
         hInstance, nullptr
     );
 
@@ -55,11 +75,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         return 1;
     }
 
-    // Apply immersive dark mode to native Windows title bar
-    BOOL useDarkMode = TRUE;
-    ::DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
+    // Rounded corners on Windows 11 (no-op on older systems).
+    DWORD cornerPref = DWMWCP_ROUND;
+    ::DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &cornerPref, sizeof(cornerPref));
 
-    // Initialize Direct3D 11 device and swap chain
     if (!CreateDeviceD3D(hwnd)) {
         CleanupDeviceD3D();
         ::DestroyWindow(hwnd);
@@ -67,28 +86,22 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         return 1;
     }
 
-    // Display window
-    ::ShowWindow(hwnd, nCmdShow);
+    ::ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     ::UpdateWindow(hwnd);
 
-    // Initialize Dear ImGui & ImPlot contexts
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImPlot::CreateContext();
 
-    ImGuiIO& io = ImGui::GetIO(); (void)io;
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Keyboard controls support
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Gamepad controls support
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = nullptr; // fixed layout — no imgui.ini needed
 
-    // Initialize Renderer helper and apply CSS dark-slate visual style
-    UiRenderer renderer(monitor);
-    renderer.ApplyTheme();
+    UiRenderer renderer(monitor, hwnd);
+    renderer.ApplyTheme(dpiScale);
 
-    // Bind platform backends
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
-    // Main Win32 Event loop
     bool done = false;
     while (!done) {
         MSG msg;
@@ -101,26 +114,28 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         if (done)
             break;
 
-        // Feed ImGui new frame updates
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-        // Render UI panels
         renderer.Render();
 
-        // Assemble draw lists and execute render commands
         ImGui::Render();
-        const float clearColor[4] = { 0.08f, 0.09f, 0.12f, 1.00f }; // Slate dark backdrop matches ImGui Window Bg
+        const float clearColor[4] = { 0.08f, 0.09f, 0.12f, 1.00f };
         g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, nullptr);
         g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, clearColor);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        g_pSwapChain->Present(1, 0);
 
-        // Present with VSync enabled (1) to eliminate GPU spin and resource waste
-        g_pSwapChain->Present(1, 0); 
+        if (renderer.WantExit())
+            break;
+
+        // Idle throttling: data changes at most once per second, so ~2 fps is
+        // plenty when nobody is interacting. Any input wakes the loop instantly.
+        DWORD waitMs = renderer.IsInteracting() ? 16 : 500;
+        ::MsgWaitForMultipleObjectsEx(0, nullptr, waitMs, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
 
-    // Teardown platform integrations
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImPlot::DestroyContext();
@@ -130,13 +145,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     ::DestroyWindow(hwnd);
     ::UnregisterClassW(wc.lpszClassName, wc.hInstance);
 
-    // Stop background metric harvesting thread
     monitor.Stop();
-
     return 0;
 }
 
-// Win32 Windows Event Handler
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
         return true;
@@ -149,10 +161,6 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 CreateRenderTarget();
             }
             return 0;
-        case WM_SYSCOMMAND:
-            if ((wParam & 0xFFF0) == SC_KEYMENU) // Disable ALT application menu shortcut triggering
-                return 0;
-            break;
         case WM_DESTROY:
             ::PostQuitMessage(0);
             return 0;
@@ -160,7 +168,6 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return ::DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
-// Direct3D 11 Initialization helpers
 bool CreateDeviceD3D(HWND hWnd) {
     DXGI_SWAP_CHAIN_DESC sd;
     ZeroMemory(&sd, sizeof(sd));
@@ -182,11 +189,11 @@ bool CreateDeviceD3D(HWND hWnd) {
     D3D_FEATURE_LEVEL featureLevel;
     const D3D_FEATURE_LEVEL featureLevelArray[2] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0, };
     HRESULT res = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, createDeviceFlags, featureLevelArray, 2, D3D11_SDK_VERSION, &sd, &g_pSwapChain, &g_pd3dDevice, &featureLevel, &g_pd3dDeviceContext);
-    
+
     // In case hardware driver setup fails (e.g. virtual environment), fall back to WARP
     if (res == DXGI_ERROR_UNSUPPORTED)
         res = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, createDeviceFlags, featureLevelArray, 2, D3D11_SDK_VERSION, &sd, &g_pSwapChain, &g_pd3dDevice, &featureLevel, &g_pd3dDeviceContext);
-    
+
     if (res != S_OK)
         return false;
 

@@ -1,40 +1,39 @@
 #pragma once
 #include "system_monitor.h"
-#include <vector>
 #include <imgui.h>
 
 class UiRenderer {
 public:
-    UiRenderer(SystemMonitor& monitor);
-    ~UiRenderer();
+    // hwnd is the top-level Win32 window (void* keeps windows.h out of this header).
+    UiRenderer(SystemMonitor& monitor, void* hwnd);
 
-    // Setup style/theme and fonts
-    void ApplyTheme();
-
-    // Render current frame
+    void ApplyTheme(float dpiScale);
     void Render();
 
+    bool WantExit() const { return m_wantExit; }
+    // True while the user hovers or drags the widget — main loop raises the
+    // frame rate during interaction and idles otherwise.
+    bool IsInteracting() const { return m_interacting; }
+
 private:
+    void DrawPercentPanel(const char* name, ImVec4 color, const std::vector<float>& history,
+                          const char* valueText, float plotHeight);
+    void DrawRatePanel(const char* name, ImVec4 colorA, ImVec4 colorB,
+                       const std::vector<float>& historyA, const std::vector<float>& historyB,
+                       const char* valueText, float plotHeight);
+    void DrawContextMenu();
+    void HandleDragging();
+    void ApplyTopMost();
+
     SystemMonitor& m_monitor;
+    void* m_hwnd;
     MonitorSnapshot m_snapshot;
 
-    // UI state/config
-    int m_refreshRateMs = 200;
-    int m_historyLen = 300;
-    bool m_showImGuiDemo = false;
-    bool m_showImPlotDemo = false;
-    
-    // Core color palette
-    std::vector<ImVec4> m_coreColors;
-    
-    void RenderSidebar(float width, float height);
-    void RenderMainContent(float xPos, float width, float height);
-    
-    void DrawOverviewTab(float dt, const std::vector<float>& xData);
-    void DrawPerCoreGridTab(float dt, const std::vector<float>& xData);
-    void DrawOverlaidCoresTab(float dt, const std::vector<float>& xData);
-    void DrawMemoryTab(float dt, const std::vector<float>& xData);
-    void DrawSettingsTab();
+    bool m_wantExit = false;
+    bool m_topMost = true;
+    bool m_interacting = false;
 
-    void InitializeColors();
+    bool m_dragging = false;
+    int m_dragCursorStartX = 0, m_dragCursorStartY = 0;
+    int m_dragWindowStartX = 0, m_dragWindowStartY = 0;
 };

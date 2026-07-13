@@ -1,20 +1,17 @@
 #pragma once
 #include <vector>
-#include <string>
 #include <thread>
 #include <mutex>
 #include <atomic>
+#include <chrono>
+
+// Number of samples kept per metric (the horizontal span of each chart).
+constexpr int kHistoryLength = 120;
 
 struct CircularBuffer {
     std::vector<float> data;
     size_t head = 0;
-    size_t maxSize = 300;
-
-    void Resize(size_t newSize) {
-        data.clear();
-        head = 0;
-        maxSize = newSize;
-    }
+    size_t maxSize = kHistoryLength;
 
     void Add(float val) {
         if (data.size() < maxSize) {
@@ -45,19 +42,22 @@ struct CircularBuffer {
 };
 
 struct MonitorSnapshot {
-    std::vector<std::vector<float>> coreHistories; // [coreIndex][timeIndex]
-    std::vector<float> avgCpuHistory;
-    std::vector<float> memoryHistory;
-    
-    std::vector<float> currentCoreUsages;
-    float currentAvgCpu = 0.0f;
-    float currentMemoryPct = 0.0f;
-    
-    double totalMemoryGB = 0.0;
-    double usedMemoryGB = 0.0;
-    double availMemoryGB = 0.0;
-    
-    int sampleCount = 0;
+    std::vector<float> cpuHistory;        // %
+    std::vector<float> memHistory;        // %
+    std::vector<float> diskReadHistory;   // KB/s
+    std::vector<float> diskWriteHistory;  // KB/s
+    std::vector<float> netDownHistory;    // KB/s
+    std::vector<float> netUpHistory;      // KB/s
+
+    float cpu = 0.0f;
+    float mem = 0.0f;
+    float diskRead = 0.0f;
+    float diskWrite = 0.0f;
+    float netDown = 0.0f;
+    float netUp = 0.0f;
+
+    double totalMemGB = 0.0;
+    double usedMemGB = 0.0;
 };
 
 class SystemMonitor {
@@ -68,52 +68,41 @@ public:
     void Start();
     void Stop();
 
-    // Configuration
     void SetIntervalMs(int ms);
     int GetIntervalMs() const { return m_intervalMs.load(); }
 
-    void SetHistoryLength(int length);
-    int GetHistoryLength() const { return m_historyLength.load(); }
-
-    // Info
-    int GetCoreCount() const { return m_coreCount; }
-    const std::string& GetCpuModelName() const { return m_cpuModelName; }
-    
-    // Data retrieval
     void GetSnapshot(MonitorSnapshot& snapshot);
 
 private:
     void WorkerLoop();
-    void CollectMetrics();
-    void QueryCpuModelName();
+    void Collect();
 
-    // Threading
     std::thread m_workerThread;
     std::atomic<bool> m_running{false};
     std::mutex m_dataMutex;
-    std::atomic<int> m_intervalMs{200};
-    std::atomic<int> m_historyLength{300};
+    std::atomic<int> m_intervalMs{1000};
 
-    // System Info
-    int m_coreCount = 0;
-    std::string m_cpuModelName;
+    CircularBuffer m_cpuHistory;
+    CircularBuffer m_memHistory;
+    CircularBuffer m_diskReadHistory;
+    CircularBuffer m_diskWriteHistory;
+    CircularBuffer m_netDownHistory;
+    CircularBuffer m_netUpHistory;
 
-    // Historical data buffers
-    std::vector<CircularBuffer> m_coreHistories;
-    CircularBuffer m_avgCpuHistory;
-    CircularBuffer m_memoryHistory;
+    double m_totalMemGB = 0.0;
+    double m_usedMemGB = 0.0;
 
-    // Previous CPU state for delta calculation
-    struct CpuTimes {
-        unsigned long long idleTime = 0;
-        unsigned long long kernelTime = 0;
-        unsigned long long userTime = 0;
-    };
-    std::vector<CpuTimes> m_prevCoreTimes;
-    CpuTimes m_prevTotalTimes;
+    // Previous sample state for delta computation (worker thread only).
+    unsigned long long m_prevIdle = 0;
+    unsigned long long m_prevKernel = 0;
+    unsigned long long m_prevUser = 0;
+    unsigned long long m_prevNetIn = 0;
+    unsigned long long m_prevNetOut = 0;
+    std::chrono::steady_clock::time_point m_prevSampleTime;
+    bool m_hasBaseline = false;
 
-    // Memory stats
-    double m_totalMemoryGB = 0.0;
-    double m_usedMemoryGB = 0.0;
-    double m_availMemoryGB = 0.0;
+    // PDH handles, kept as void* so this header stays free of windows.h.
+    void* m_pdhQuery = nullptr;
+    void* m_diskReadCounter = nullptr;
+    void* m_diskWriteCounter = nullptr;
 };

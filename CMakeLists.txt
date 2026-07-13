@@ -30,9 +30,8 @@ set(SOURCES
     src/ui_renderer.h
     src/ui_renderer.cpp
     
-    # ImGui sources
+    # ImGui sources (demo translation units excluded to keep the binary small)
     ${imgui_SOURCE_DIR}/imgui.cpp
-    ${imgui_SOURCE_DIR}/imgui_demo.cpp
     ${imgui_SOURCE_DIR}/imgui_draw.cpp
     ${imgui_SOURCE_DIR}/imgui_tables.cpp
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp
@@ -41,7 +40,6 @@ set(SOURCES
 
     # ImPlot sources
     ${implot_SOURCE_DIR}/implot.cpp
-    ${implot_SOURCE_DIR}/implot_demo.cpp
     ${implot_SOURCE_DIR}/implot_items.cpp
 )
 
@@ -66,6 +64,8 @@ target_link_libraries(win_hardware_monitor PRIVATE
     dxgi
     d3dcompiler
     dwmapi
+    pdh
+    iphlpapi
 )
 
 # Hide console window in Release mode
