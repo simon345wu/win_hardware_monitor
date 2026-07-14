@@ -10,18 +10,23 @@
 
 ## 🚀 功能
 
-*   **四項核心指標**,各一條時間軸折線圖(新資料由右側推進,預設保留 2 分鐘):
-    *   **CPU**(藍)— 全系統平均使用率 (%)
+*   **五項核心指標**,各一條時間軸折線圖(新資料由右側推進,預設保留 2 分鐘):
+    *   **CPU**(藍)— 全系統平均使用率 (%) 與 **CPU 實體溫度** (攝氏度，依加載狀態著色)。
     *   **MEM**(綠)— 記憶體使用率 (%),右上顯示 已用/總量 GB(與工作管理員口徑一致)
     *   **DISK** — 磁碟讀取 R(橘)/ 寫入 W(紅)速率,自動以 KB/s、MB/s 顯示
     *   **NET** — 網路下載 D(紫)/ 上傳 U(粉)速率
+*   **動態狀態著色** (針對 CPU 溫度呈現)：
+    *   🟢 **綠色**：以系統管理員執行成功載入內核驅動程式，讀取**硬體暫存器實體真實溫度**。
+    *   🟡 **橘黃色**：無管理員權限或硬體不支援，自動優雅降級為 **WMI 查詢** 或 **CPU 負載平滑模擬溫度**。
+*   **內建驅動程式加載技術**：
+    *   將 `WinRing0` 動態庫與核心驅動封裝在二進位資源中，小工具啟動時會在背景自動釋放並載入，維持**「單一執行檔、免手動安裝」**的好處。
 *   **小巧不擾人**
     *   無邊框小視窗(300×296 邏輯像素),啟動時自動停靠工作區右上角
     *   永遠置頂(可關閉)、不佔工作列、不出現在 Alt-Tab
     *   Windows 11 圓角、完整支援高 DPI 縮放(字體與版面隨系統縮放,實測 225% 清晰)
-*   **極低系統開銷**(於 32 核心機器實測)
+*   **極低系統開銷**
     *   閒置 CPU:約單核心 0.8%(整機 < 0.1%)
-    *   記憶體工作集:約 46 MB;執行檔:約 470 KB,單一檔案免安裝
+    *   記憶體工作集:約 48 MB;執行檔:約 560 KB,單一檔案免安裝
 
 ## 🖱️ 操作
 
@@ -29,10 +34,11 @@
 |------|------|
 | 左鍵拖曳 | 移動視窗到任意位置 |
 | 右鍵 | 選單:置頂開關、採樣間隔(0.5s / 1s / 2s,對應 1 / 2 / 4 分鐘視窗)、結束 |
+| **以管理員執行** | **啟用實體硬體溫度讀取**（否則會無縫降級為黃橘色模擬溫度） |
 
 ### 開機自動啟動(選用)
 
-按 `Win+R` 輸入 `shell:startup`,在開啟的資料夾中為 `build\Release\win_hardware_monitor.exe` 建立捷徑即可。
+按 `Win+R` 輸入 `shell:startup`,在開啟的資料夾中為 `build\Release\win_hardware_monitor.exe` 建立捷徑即可。若需要開機自動以管理員權限啟動，建議透過「Windows 工作排程器」建立一個以最高權限執行的登入工作。
 
 ---
 
@@ -70,9 +76,10 @@ cmake --build build --config Release
 
 ### 數據來源
 
-| 指標 | API | 說明 |
-|------|-----|------|
+| 指標 | API / 機制 | 說明 |
+|------|-----------|------|
 | CPU | `GetSystemTimes` | 以 idle/kernel/user 時間的兩次採樣差值計算;單次呼叫,不逐核採樣 |
+| CPU 溫度 | **內嵌式 WinRing0 (PCI/MSR)** | **AMD**: 寫入 PCI 暫存器指定 SMN `0x00059800` 位址，讀取 PCI 0x64 數值並扣除 49°C 偏移量。<br>**Intel**: 讀取 MSR `0x19c` (`IA32_THERM_STATUS`) 結合 MSR `0x1A2` 的 TjMax 計算實體核心溫度。<br>**Fallback 1**: 查詢 WMI `MSAcpi_ThermalZoneTemperature`。<br>**Fallback 2**: 依 CPU 負載平滑模擬算式 (`37°C + cpuPct * 0.45`)。 |
 | 記憶體 | `GlobalMemoryStatusEx` | 已用 = 總實體記憶體 − 可用;與工作管理員「使用中」相同口徑 |
 | 磁碟 | PDH `\PhysicalDisk(_Total)\Disk Read/Write Bytes/sec` | 以 `PdhAddEnglishCounter` 加入計數器,中文等本地化 Windows 也能運作 |
 | 網路 | `GetIfTable2` | 加總「實體且已連線」介面卡的 octet 計數差值;排除 loopback 與虛擬介面卡,避免同一流量重複計算 |
@@ -92,19 +99,27 @@ cmake --build build --config Release
 win_hardware_monitor/
 ├── CMakeLists.txt         # CMake 設定(FetchContent 下載 ImGui & ImPlot)
 ├── build.bat              # 一鍵編譯腳本(自動尋找 VS 2022)
+├── WinRing0x64.dll        # 實體讀取所需的驅動程式動態庫 (發行版已內置二進位資源)
+├── WinRing0x64.sys        # 實體讀取核心驅動程式 (發行版已內置二進位資源)
 ├── docs/screenshot.png    # 執行畫面
 ├── src/
 │   ├── main.cpp           # Win32 無邊框視窗、D3D11 初始化、閒置節流主迴圈
-│   ├── system_monitor.h   # 環形緩衝區與監控執行緒宣告
-│   ├── system_monitor.cpp # CPU / 記憶體 / 磁碟 / 網路採樣實作
+│   ├── resource_ids.h     # 資源 ID 定義
+│   ├── resources.rc       # 打包 WinRing0 DLL/SYS 的資源編譯檔
+│   ├── system_monitor.h   # 環形緩衝區與監控執行緒宣告 (含 WinRing0 動態讀取介面)
+│   ├── system_monitor.cpp # CPU / 記憶體 / 磁碟 / 網路 / 溫度採樣與優雅降級邏輯
 │   ├── ui_renderer.h      # 小工具面板宣告
-│   └── ui_renderer.cpp    # 四格折線圖、右鍵選單、拖曳移動、主題
+│   └── ui_renderer.cpp    # 四格折線圖、雙色溫度渲染、右鍵選單、主題
 └── py_monitor/            # 舊版多分頁監控的 Python 實作(未跟進改版,僅供參考)
 ```
 
 ## 📝 版本沿革
 
-*   **v2(目前)**— 改寫為桌面角落小工具:僅保留 CPU / MEM / DISK / NET 四指標折線圖,新增磁碟與網路監控,大幅降低資源佔用。
+*   **v3(目前)** — 新增 **CPU 實體溫度監控與內嵌加載技術**：
+    *   使用 C++ 資源內嵌 WinRing0 驅動，啟動時自動釋放載入。
+    *   支援 AMD Ryzen 系列（PCI 讀取 SMN 並校正 Tctl 偏移）與 Intel Core 系列（MSR 讀取與 TjMax 換算）。
+    *   設計「雙色狀態指示」與「優雅安全降級」：管理員權限載入實體溫度顯示綠色，非管理員或虛擬機環境降級為負載估算溫度，顯示為黃橘色。
+*   **v2** — 改寫為桌面角落小工具:僅保留 CPU / MEM / DISK / NET 四指標折線圖,新增磁碟與網路監控,大幅降低資源佔用。
 *   **v1** — 多分頁完整監控介面(逐核 CPU 網格、重疊曲線、記憶體詳情、設定頁)。如需舊版可查 git 歷史第一個 commit,或參考 `py_monitor/` 的 Python 實作。
 
 ---
