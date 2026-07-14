@@ -55,6 +55,8 @@ struct MonitorSnapshot {
     float diskWrite = 0.0f;
     float netDown = 0.0f;
     float netUp = 0.0f;
+    float cpuTemp = 0.0f;
+    bool isRealTemp = false;
 
     double totalMemGB = 0.0;
     double usedMemGB = 0.0;
@@ -75,7 +77,7 @@ public:
 
 private:
     void WorkerLoop();
-    void Collect();
+    void Collect(void* pSvc = nullptr);
 
     std::thread m_workerThread;
     std::atomic<bool> m_running{false};
@@ -91,6 +93,8 @@ private:
 
     double m_totalMemGB = 0.0;
     double m_usedMemGB = 0.0;
+    float m_cpuTemp = 0.0f;
+    bool m_isRealTemp = false;
 
     // Previous sample state for delta computation (worker thread only).
     unsigned long long m_prevIdle = 0;
@@ -105,4 +109,27 @@ private:
     void* m_pdhQuery = nullptr;
     void* m_diskReadCounter = nullptr;
     void* m_diskWriteCounter = nullptr;
+
+    // WinRing0 members and helper functions
+    void InitWinRing0();
+    void ShutdownWinRing0();
+    bool IsAmdCpu();
+    bool IsIntelCpu();
+
+    void* m_hWinRing0 = nullptr; // HMODULE
+    bool m_winRing0Ready = false;
+
+    typedef int (__stdcall *InitializeOlsFunc)();
+    typedef void (__stdcall *DeinitializeOlsFunc)();
+    typedef unsigned long (__stdcall *GetDllStatusFunc)();
+    typedef int (__stdcall *ReadPciConfigDwordExFunc)(unsigned long pciAddress, unsigned long regAddress, unsigned long* value);
+    typedef int (__stdcall *WritePciConfigDwordExFunc)(unsigned long pciAddress, unsigned long regAddress, unsigned long value);
+    typedef int (__stdcall *RdmsrFunc)(unsigned long msr, unsigned long* eax, unsigned long* edx);
+
+    InitializeOlsFunc m_InitializeOls = nullptr;
+    DeinitializeOlsFunc m_DeinitializeOls = nullptr;
+    GetDllStatusFunc m_GetDllStatus = nullptr;
+    ReadPciConfigDwordExFunc m_ReadPciConfigDwordEx = nullptr;
+    WritePciConfigDwordExFunc m_WritePciConfigDwordEx = nullptr;
+    RdmsrFunc m_Rdmsr = nullptr;
 };

@@ -29,6 +29,7 @@ set(SOURCES
     src/system_monitor.cpp
     src/ui_renderer.h
     src/ui_renderer.cpp
+    src/resources.rc
     
     # ImGui sources (demo translation units excluded to keep the binary small)
     ${imgui_SOURCE_DIR}/imgui.cpp
@@ -66,6 +67,7 @@ target_link_libraries(win_hardware_monitor PRIVATE
     dwmapi
     pdh
     iphlpapi
+    wbemuuid
 )
 
 # Hide console window in Release mode

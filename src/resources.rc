@@ -1,0 +1,3 @@
+#include "resource_ids.h"
+IDR_WINRING0_DLL RCDATA "../WinRing0x64.dll"
+IDR_WINRING0_SYS RCDATA "../WinRing0x64.sys"

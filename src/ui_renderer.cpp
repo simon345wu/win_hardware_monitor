@@ -123,9 +123,34 @@ void UiRenderer::DrawPercentPanel(const char* name, ImVec4 color,
                                   const std::vector<float>& history,
                                   const char* valueText, float plotHeight) {
     ImGui::TextColored(color, "%s", name);
-    float valueW = ImGui::CalcTextSize(valueText).x;
-    ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - valueW);
-    ImGui::TextUnformatted(valueText);
+    float availX = ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX();
+
+    if (strcmp(name, "CPU") == 0) {
+        float pctW = ImGui::CalcTextSize(valueText).x;
+        
+        char tempText[32];
+        snprintf(tempText, sizeof(tempText), "%.0f°C", m_snapshot.cpuTemp);
+        float tempW = ImGui::CalcTextSize(tempText).x;
+        
+        float spacing = ImGui::GetStyle().ItemSpacing.x * 2.0f;
+        float totalW = pctW + spacing + tempW;
+        
+        ImGui::SameLine(availX - totalW);
+        ImGui::TextUnformatted(valueText);
+        
+        ImGui::SameLine();
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + spacing);
+        
+        // Green for real hardware WMI, Orange/Yellow for Fallback
+        ImVec4 tempColor = m_snapshot.isRealTemp ?
+            ImVec4(0.38f, 0.80f, 0.48f, 1.00f) :  // WMI (Green)
+            ImVec4(0.98f, 0.68f, 0.25f, 1.00f);  // Fallback (Orange)
+        ImGui::TextColored(tempColor, "%s", tempText);
+    } else {
+        float valueW = ImGui::CalcTextSize(valueText).x;
+        ImGui::SameLine(availX - valueW);
+        ImGui::TextUnformatted(valueText);
+    }
 
     char plotId[32];
     snprintf(plotId, sizeof(plotId), "##plot_%s", name);
