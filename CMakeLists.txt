@@ -44,6 +44,12 @@ set(SOURCES
     ${implot_SOURCE_DIR}/implot_items.cpp
 )
 
+# resources.rc pulls these in by path, but CMake only tracks the .rc itself — without
+# this, editing the icon or the driver binaries leaves a stale resource in the exe.
+set_source_files_properties(src/resources.rc PROPERTIES OBJECT_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/hw_monitor.ico;${CMAKE_CURRENT_SOURCE_DIR}/WinRing0x64.dll;${CMAKE_CURRENT_SOURCE_DIR}/WinRing0x64.sys;${CMAKE_CURRENT_SOURCE_DIR}/src/resource_ids.h"
+)
+
 add_executable(win_hardware_monitor ${SOURCES})
 
 target_include_directories(win_hardware_monitor PRIVATE
