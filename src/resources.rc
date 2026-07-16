@@ -1,3 +1,4 @@
 #include "resource_ids.h"
+IDI_APP_ICON     ICON   "../hw_monitor.ico"
 IDR_WINRING0_DLL RCDATA "../WinRing0x64.dll"
 IDR_WINRING0_SYS RCDATA "../WinRing0x64.sys"

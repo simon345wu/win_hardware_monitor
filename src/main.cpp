@@ -8,6 +8,7 @@
 #include <implot.h>
 #include "system_monitor.h"
 #include "ui_renderer.h"
+#include "resource_ids.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -39,9 +40,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     SystemMonitor monitor;
     monitor.Start();
 
+    // LoadImageW with the system metrics picks the best-matching size out of the
+    // .ico; LoadIconW would always hand back the large one and scale it down.
+    HICON hIconLarge = (HICON)::LoadImageW(hInstance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON,
+                                           ::GetSystemMetrics(SM_CXICON),
+                                           ::GetSystemMetrics(SM_CYICON), 0);
+    HICON hIconSmall = (HICON)::LoadImageW(hInstance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON,
+                                           ::GetSystemMetrics(SM_CXSMICON),
+                                           ::GetSystemMetrics(SM_CYSMICON), 0);
+
     WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, hInstance,
-                       nullptr, ::LoadCursorW(nullptr, IDC_ARROW), nullptr, nullptr,
-                       L"WinResMonitorClass", nullptr };
+                       hIconLarge, ::LoadCursorW(nullptr, IDC_ARROW), nullptr, nullptr,
+                       L"WinResMonitorClass", hIconSmall };
     ::RegisterClassExW(&wc);
 
     // Size/position: DPI-scaled, docked to the top-right of the work area.
