@@ -8,6 +8,9 @@ obj/
 *.pdb
 *.ilk
 *.lib
+*.obj
+*.exp
+*.res
 
 # Python virtual environment
 py_monitor/.venv/
