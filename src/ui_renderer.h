@@ -16,14 +16,17 @@ public:
     bool IsInteracting() const { return m_interacting; }
 
 private:
+    // tempText (optional) renders right-aligned after valueText in tempColor.
     void DrawPercentPanel(const char* name, ImVec4 color, const std::vector<float>& history,
-                          const char* valueText, float plotHeight);
+                          const char* valueText, float plotHeight,
+                          const char* tempText = nullptr, ImVec4 tempColor = ImVec4());
     void DrawRatePanel(const char* name, ImVec4 colorA, ImVec4 colorB,
                        const std::vector<float>& historyA, const std::vector<float>& historyB,
                        const char* valueText, float plotHeight);
     void DrawContextMenu();
     void HandleDragging();
     void ApplyTopMost();
+    void ApplyCompactSize();
 
     SystemMonitor& m_monitor;
     void* m_hwnd;
@@ -32,6 +35,11 @@ private:
     bool m_wantExit = false;
     bool m_topMost = true;
     bool m_interacting = false;
+
+    bool m_compact = false;
+    // Full window size in physical pixels, captured on the first compact toggle.
+    int m_fullWidth = 0, m_fullHeight = 0;
+    ImFont* m_fontSmall = nullptr;
 
     bool m_dragging = false;
     int m_dragCursorStartX = 0, m_dragCursorStartY = 0;

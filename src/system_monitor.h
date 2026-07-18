@@ -57,6 +57,8 @@ struct MonitorSnapshot {
     float netUp = 0.0f;
     float cpuTemp = 0.0f;
     bool isRealTemp = false;
+    float memTemp = 0.0f;   // hottest DIMM, °C (DDR5 SPD5118 sensor)
+    bool hasMemTemp = false;
 
     double totalMemGB = 0.0;
     double usedMemGB = 0.0;
@@ -95,6 +97,8 @@ private:
     double m_usedMemGB = 0.0;
     float m_cpuTemp = 0.0f;
     bool m_isRealTemp = false;
+    float m_memTemp = 0.0f;
+    bool m_hasMemTemp = false;
 
     // Previous sample state for delta computation (worker thread only).
     unsigned long long m_prevIdle = 0;
@@ -116,6 +120,16 @@ private:
     bool IsAmdCpu();
     bool IsIntelCpu();
 
+    // DIMM temperature over the FCH SMBus controller (AMD; DDR5 SPD5118 hubs).
+    void InitSmbus();
+    bool SmbusReadByte(unsigned char devAddr, unsigned char reg, unsigned char& value);
+    bool ReadDimmTemp(unsigned char devAddr, float& tempC);
+
+    unsigned short m_smbusBase = 0;      // SMBus host controller I/O base; 0 = unavailable
+    unsigned char m_dimmAddrs[8] = {};   // detected SPD5118 SMBus addresses
+    int m_dimmCount = 0;
+    void* m_smbusMutex = nullptr;        // HANDLE; industry-convention SMBus arbitration mutex
+
     void* m_hWinRing0 = nullptr; // HMODULE
     bool m_winRing0Ready = false;
 
@@ -125,6 +139,8 @@ private:
     typedef int (__stdcall *ReadPciConfigDwordExFunc)(unsigned long pciAddress, unsigned long regAddress, unsigned long* value);
     typedef int (__stdcall *WritePciConfigDwordExFunc)(unsigned long pciAddress, unsigned long regAddress, unsigned long value);
     typedef int (__stdcall *RdmsrFunc)(unsigned long msr, unsigned long* eax, unsigned long* edx);
+    typedef unsigned char (__stdcall *ReadIoPortByteFunc)(unsigned short port);
+    typedef void (__stdcall *WriteIoPortByteFunc)(unsigned short port, unsigned char value);
 
     InitializeOlsFunc m_InitializeOls = nullptr;
     DeinitializeOlsFunc m_DeinitializeOls = nullptr;
@@ -132,4 +148,6 @@ private:
     ReadPciConfigDwordExFunc m_ReadPciConfigDwordEx = nullptr;
     WritePciConfigDwordExFunc m_WritePciConfigDwordEx = nullptr;
     RdmsrFunc m_Rdmsr = nullptr;
+    ReadIoPortByteFunc m_ReadIoPortByte = nullptr;
+    WriteIoPortByteFunc m_WriteIoPortByte = nullptr;
 };
