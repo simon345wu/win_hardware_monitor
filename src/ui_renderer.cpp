@@ -13,6 +13,9 @@ const ImVec4 kColorDiskWrite= ImVec4(0.94f, 0.40f, 0.40f, 1.00f); // red
 const ImVec4 kColorNetDown  = ImVec4(0.68f, 0.52f, 0.96f, 1.00f); // purple
 const ImVec4 kColorNetUp    = ImVec4(0.95f, 0.55f, 0.80f, 1.00f); // pink
 
+const ImVec4 kColorTempReal     = ImVec4(0.38f, 0.80f, 0.48f, 1.00f); // green — hardware sensor
+const ImVec4 kColorTempFallback = ImVec4(0.98f, 0.68f, 0.25f, 1.00f); // orange — estimated
+
 void FormatRate(float kbPerSec, char* buf, size_t bufSize) {
     if (kbPerSec >= 1024.0f)
         snprintf(buf, bufSize, "%.1fM", kbPerSec / 1024.0f);
@@ -62,6 +65,8 @@ void UiRenderer::ApplyTheme(float dpiScale) {
     // Crisp text at any DPI; falls back to the built-in bitmap font if missing.
     ImGuiIO& io = ImGui::GetIO();
     io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 15.0f * dpiScale);
+    // Smaller face for compact (1/2) mode; 60% keeps labels legible at half size.
+    m_fontSmall = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 15.0f * 0.6f * dpiScale);
 
     ImPlotStyle& plotStyle = ImPlot::GetStyle();
     plotStyle.PlotPadding = ImVec2(0.0f, 1.0f);
@@ -75,6 +80,16 @@ void UiRenderer::ApplyTheme(float dpiScale) {
 
 void UiRenderer::Render() {
     m_monitor.GetSnapshot(m_snapshot);
+
+    // The context menu can flip m_compact mid-frame; push/pop must use the
+    // same value or the style/font stacks become unbalanced and assert.
+    const bool compact = m_compact;
+    if (compact) {
+        const ImGuiStyle& s = ImGui::GetStyle();
+        ImGui::PushFont(m_fontSmall);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(s.WindowPadding.x * 0.5f, s.WindowPadding.y * 0.5f));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(s.ItemSpacing.x * 0.5f, s.ItemSpacing.y * 0.5f));
+    }
 
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->Pos);
@@ -91,12 +106,23 @@ void UiRenderer::Render() {
 
     char value[64], a[32], b[32];
 
+    char cpuTempText[32];
+    snprintf(cpuTempText, sizeof(cpuTempText), "%.0f°C", m_snapshot.cpuTemp);
     snprintf(value, sizeof(value), "%.0f%%", m_snapshot.cpu);
-    DrawPercentPanel("CPU", kColorCpu, m_snapshot.cpuHistory, value, plotH);
+    DrawPercentPanel("CPU", kColorCpu, m_snapshot.cpuHistory, value, plotH,
+                     cpuTempText, m_snapshot.isRealTemp ? kColorTempReal : kColorTempFallback);
 
+    // DIMM temp is only shown when the SPD5118 sensor is readable — no estimate.
+    char memTempText[32];
+    const char* memTemp = nullptr;
+    if (m_snapshot.hasMemTemp) {
+        snprintf(memTempText, sizeof(memTempText), "%.0f°C", m_snapshot.memTemp);
+        memTemp = memTempText;
+    }
     snprintf(value, sizeof(value), "%.0f%%  %.1f/%.1fG",
              m_snapshot.mem, m_snapshot.usedMemGB, m_snapshot.totalMemGB);
-    DrawPercentPanel("MEM", kColorMem, m_snapshot.memHistory, value, plotH);
+    DrawPercentPanel("MEM", kColorMem, m_snapshot.memHistory, value, plotH,
+                     memTemp, kColorTempReal);
 
     FormatRate(m_snapshot.diskRead, a, sizeof(a));
     FormatRate(m_snapshot.diskWrite, b, sizeof(b));
@@ -117,37 +143,29 @@ void UiRenderer::Render() {
     m_interacting = ImGui::GetIO().WantCaptureMouse || m_dragging || popupOpen;
 
     ImGui::End();
+
+    if (compact) {
+        ImGui::PopStyleVar(2);
+        ImGui::PopFont();
+    }
 }
 
 void UiRenderer::DrawPercentPanel(const char* name, ImVec4 color,
                                   const std::vector<float>& history,
-                                  const char* valueText, float plotHeight) {
+                                  const char* valueText, float plotHeight,
+                                  const char* tempText, ImVec4 tempColor) {
     ImGui::TextColored(color, "%s", name);
     float availX = ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX();
+    float valueW = ImGui::CalcTextSize(valueText).x;
 
-    if (strcmp(name, "CPU") == 0) {
-        float pctW = ImGui::CalcTextSize(valueText).x;
-        
-        char tempText[32];
-        snprintf(tempText, sizeof(tempText), "%.0f°C", m_snapshot.cpuTemp);
+    if (tempText) {
         float tempW = ImGui::CalcTextSize(tempText).x;
-        
         float spacing = ImGui::GetStyle().ItemSpacing.x * 2.0f;
-        float totalW = pctW + spacing + tempW;
-        
-        ImGui::SameLine(availX - totalW);
+        ImGui::SameLine(availX - (valueW + spacing + tempW));
         ImGui::TextUnformatted(valueText);
-        
-        ImGui::SameLine();
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + spacing);
-        
-        // Green for real hardware WMI, Orange/Yellow for Fallback
-        ImVec4 tempColor = m_snapshot.isRealTemp ?
-            ImVec4(0.38f, 0.80f, 0.48f, 1.00f) :  // WMI (Green)
-            ImVec4(0.98f, 0.68f, 0.25f, 1.00f);  // Fallback (Orange)
+        ImGui::SameLine(availX - tempW);
         ImGui::TextColored(tempColor, "%s", tempText);
     } else {
-        float valueW = ImGui::CalcTextSize(valueText).x;
         ImGui::SameLine(availX - valueW);
         ImGui::TextUnformatted(valueText);
     }
@@ -214,6 +232,9 @@ void UiRenderer::DrawContextMenu() {
         if (ImGui::MenuItem("Always on top", nullptr, &m_topMost)) {
             ApplyTopMost();
         }
+        if (ImGui::MenuItem("Compact size (1/2)", nullptr, &m_compact)) {
+            ApplyCompactSize();
+        }
         ImGui::Separator();
         int interval = m_monitor.GetIntervalMs();
         if (ImGui::MenuItem("0.5s sampling (1 min span)", nullptr, interval == 500))
@@ -260,6 +281,22 @@ void UiRenderer::HandleDragging() {
             m_dragging = false;
         }
     }
+}
+
+void UiRenderer::ApplyCompactSize() {
+    HWND hwnd = (HWND)m_hwnd;
+    RECT rect;
+    if (!::GetWindowRect(hwnd, &rect))
+        return;
+    if (m_fullWidth == 0) {
+        m_fullWidth = rect.right - rect.left;
+        m_fullHeight = rect.bottom - rect.top;
+    }
+    int w = m_compact ? m_fullWidth / 2 : m_fullWidth;
+    int h = m_compact ? m_fullHeight / 2 : m_fullHeight;
+    // Keep the top-right corner anchored — the widget docks to the right edge.
+    ::SetWindowPos(hwnd, nullptr, rect.right - w, rect.top, w, h,
+                   SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 void UiRenderer::ApplyTopMost() {

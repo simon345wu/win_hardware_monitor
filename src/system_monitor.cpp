@@ -90,14 +90,110 @@ void SystemMonitor::InitWinRing0() {
         m_ReadPciConfigDwordEx = (ReadPciConfigDwordExFunc)GetProcAddress(hDll, "ReadPciConfigDwordEx");
         m_WritePciConfigDwordEx = (WritePciConfigDwordExFunc)GetProcAddress(hDll, "WritePciConfigDwordEx");
         m_Rdmsr = (RdmsrFunc)GetProcAddress(hDll, "Rdmsr");
+        m_ReadIoPortByte = (ReadIoPortByteFunc)GetProcAddress(hDll, "ReadIoPortByte");
+        m_WriteIoPortByte = (WriteIoPortByteFunc)GetProcAddress(hDll, "WriteIoPortByte");
 
-        if (m_InitializeOls && m_DeinitializeOls && m_GetDllStatus && 
+        if (m_InitializeOls && m_DeinitializeOls && m_GetDllStatus &&
             m_ReadPciConfigDwordEx && m_WritePciConfigDwordEx && m_Rdmsr) {
             if (m_InitializeOls()) {
                 m_winRing0Ready = true;
             }
         }
     }
+
+    InitSmbus();
+}
+
+void SystemMonitor::InitSmbus() {
+    // DDR5 DIMM temperature comes from the SPD5118 hub's thermal sensor, read
+    // over the chipset SMBus host controller. AMD FCH only — the Intel PCH
+    // SMBus controller lives elsewhere and is not implemented here.
+    if (!m_winRing0Ready || !m_ReadIoPortByte || !m_WriteIoPortByte) return;
+    if (!IsAmdCpu()) return;
+
+    // FCH SMBus controller is at PCI bus 0, device 0x14, function 0 (AMD 0x1022).
+    unsigned long id = 0;
+    if (!m_ReadPciConfigDwordEx(0x14 << 3, 0x00, &id)) return;
+    if ((id & 0xFFFF) != 0x1022) return;
+
+    // SMBus I/O base from the FCH PM registers (index/data ports 0xCD6/0xCD7):
+    // PM reg 0x00 bit 4 = SMBus decode enabled, PM reg 0x01 = base >> 8.
+    m_WriteIoPortByte(0xCD6, 0x00);
+    unsigned char lo = m_ReadIoPortByte(0xCD7);
+    m_WriteIoPortByte(0xCD6, 0x01);
+    unsigned char hi = m_ReadIoPortByte(0xCD7);
+    unsigned short base = 0;
+    if (lo & 0x10) base = (unsigned short)hi << 8;
+    if (base == 0 || base == 0xFF00) base = 0xB00; // common default on AM4/AM5
+    if (m_ReadIoPortByte(base) == 0xFF) return;    // nothing decodes here
+    m_smbusBase = base;
+
+    // Industry convention: monitoring and RGB tools serialize SMBus access
+    // through this named mutex. Missing it risks interleaved transactions.
+    m_smbusMutex = CreateMutexW(nullptr, FALSE, L"Global\\Access_SMBUS.HTP.Method");
+
+    bool locked = false;
+    if (m_smbusMutex) {
+        DWORD wait = WaitForSingleObject((HANDLE)m_smbusMutex, 1000);
+        locked = (wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED);
+        if (!locked) return; // busy bus at startup — leave the feature off
+    }
+
+    // Probe all 8 SPD slots for SPD5118 hubs (MR0/MR1 = device type 0x51 0x18).
+    for (unsigned char addr = 0x50; addr <= 0x57; ++addr) {
+        unsigned char mr0 = 0, mr1 = 0;
+        if (SmbusReadByte(addr, 0x00, mr0) && SmbusReadByte(addr, 0x01, mr1) &&
+            mr0 == 0x51 && mr1 == 0x18) {
+            m_dimmAddrs[m_dimmCount++] = addr;
+        }
+    }
+    if (locked) ReleaseMutex((HANDLE)m_smbusMutex);
+
+    if (m_dimmCount == 0) m_smbusBase = 0; // no DDR5 SPD hubs found — disable
+}
+
+// One SMBus "read byte data" transaction on the PIIX4-compatible AMD FCH host
+// controller. Register map (offsets from base): 0 status, 2 control, 3 command,
+// 4 address, 5 data0.
+bool SystemMonitor::SmbusReadByte(unsigned char devAddr, unsigned char reg, unsigned char& value) {
+    const unsigned short base = m_smbusBase;
+    if (base == 0) return false;
+
+    // Wait out any in-flight transaction, then clear stale status bits.
+    int spin = 0;
+    while ((m_ReadIoPortByte(base) & 0x01) && ++spin < 400) {}
+    if (spin >= 400) return false;
+    m_WriteIoPortByte(base, 0x1F);
+
+    m_WriteIoPortByte(base + 4, (unsigned char)((devAddr << 1) | 1)); // slave addr, read
+    m_WriteIoPortByte(base + 3, reg);
+    m_WriteIoPortByte(base + 2, 0x48); // start | byte-data protocol
+
+    for (int i = 0; i < 2000; ++i) {
+        unsigned char st = m_ReadIoPortByte(base);
+        if (st & 0x1C) {               // device error / bus collision / failed
+            m_WriteIoPortByte(base, 0x1F);
+            return false;
+        }
+        if (st & 0x02) {               // transaction complete
+            value = m_ReadIoPortByte(base + 5);
+            m_WriteIoPortByte(base, 0x02);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool SystemMonitor::ReadDimmTemp(unsigned char devAddr, float& tempC) {
+    // SPD5118 MR49/MR50: sensed temperature, 11-bit two's complement in bits
+    // [12:2] of the little-endian word, 0.25 C per LSB (JESD300-5).
+    unsigned char lo = 0, hi = 0;
+    if (!SmbusReadByte(devAddr, 49, lo) || !SmbusReadByte(devAddr, 50, hi))
+        return false;
+    int raw = (((int)hi << 8) | lo) >> 2;
+    if (raw & 0x400) raw -= 0x800;
+    tempC = raw * 0.25f;
+    return tempC > -25.0f && tempC < 125.0f;
 }
 
 void SystemMonitor::ShutdownWinRing0() {
@@ -108,6 +204,10 @@ void SystemMonitor::ShutdownWinRing0() {
     if (m_hWinRing0) {
         FreeLibrary((HMODULE)m_hWinRing0);
         m_hWinRing0 = nullptr;
+    }
+    if (m_smbusMutex) {
+        CloseHandle((HANDLE)m_smbusMutex);
+        m_smbusMutex = nullptr;
     }
 }
 
@@ -172,6 +272,8 @@ void SystemMonitor::GetSnapshot(MonitorSnapshot& snapshot) {
     snapshot.netUp = m_netUpHistory.GetLatest();
     snapshot.cpuTemp = m_cpuTemp;
     snapshot.isRealTemp = m_isRealTemp;
+    snapshot.memTemp = m_memTemp;
+    snapshot.hasMemTemp = m_hasMemTemp;
 
     snapshot.totalMemGB = m_totalMemGB;
     snapshot.usedMemGB = m_usedMemGB;
@@ -426,6 +528,30 @@ void SystemMonitor::Collect(void* pSvc) {
         cpuTemp = 37.0f + (cpuPct * 0.45f);
     }
 
+    // --- DIMM temperature (DDR5 SPD5118 over SMBus; hottest stick wins) ---
+    // No simulated fallback: if the bus is busy or a read fails, keep the last
+    // good value; the UI simply omits the readout until one arrives.
+    float memTemp = m_memTemp;
+    bool hasMemTemp = m_hasMemTemp;
+    if (m_smbusBase != 0 && m_dimmCount > 0) {
+        DWORD wait = m_smbusMutex
+            ? WaitForSingleObject((HANDLE)m_smbusMutex, 50)
+            : WAIT_OBJECT_0;
+        if (wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED) {
+            float maxTemp = -1000.0f;
+            for (int i = 0; i < m_dimmCount; ++i) {
+                float t = 0.0f;
+                if (ReadDimmTemp(m_dimmAddrs[i], t) && t > maxTemp)
+                    maxTemp = t;
+            }
+            if (m_smbusMutex) ReleaseMutex((HANDLE)m_smbusMutex);
+            if (maxTemp > -1000.0f) {
+                memTemp = maxTemp;
+                hasMemTemp = true;
+            }
+        }
+    }
+
     // First call only establishes the delta baselines. Memory readings are
     // instantaneous (not delta-based), so store them right away instead of
     // showing 0/0 GB until the second sample.
@@ -436,6 +562,8 @@ void SystemMonitor::Collect(void* pSvc) {
         m_usedMemGB = usedGB;
         m_cpuTemp = cpuTemp;
         m_isRealTemp = isReal;
+        m_memTemp = memTemp;
+        m_hasMemTemp = hasMemTemp;
         return;
     }
 
@@ -450,4 +578,6 @@ void SystemMonitor::Collect(void* pSvc) {
     m_usedMemGB = usedGB;
     m_cpuTemp = cpuTemp;
     m_isRealTemp = isReal;
+    m_memTemp = memTemp;
+    m_hasMemTemp = hasMemTemp;
 }
